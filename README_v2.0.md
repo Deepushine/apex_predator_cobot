@@ -4,6 +4,7 @@
 ![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen)
 ![Version](https://img.shields.io/badge/Version-2.0.0-blue)
 ![Language](https://img.shields.io/badge/Python-3.9%2B-blue)
+![Hardware](https://img.shields.io/badge/Shield-RAMPS%201.6-orange)
 ![License](https://img.shields.io/badge/License-Private-red)
 
 ---
@@ -85,7 +86,7 @@ Motion complete → Response "OK"
 └──────────────────┬──────────────────────┘
                    │
 ┌──────────────────▼──────────────────────┐
-│          HARDWARE (RAMPS 1.4)           │
+│          HARDWARE (RAMPS 1.6)           │
 │  - DRV8825 drivers (1/8 microstepping)  │
 │  - 3x NEMA 17 motors (5.6 kg-cm)        │
 │  - 20:1 gearbox (Shoulder + Elbow)      │
@@ -182,7 +183,7 @@ Debounce:       20ms
 ### Board & Controller
 ```
 Microcontroller:    Arduino Mega 2560
-Shield:             RAMPS 1.4
+Shield:             RAMPS 1.6
 Serial:             115200 baud
 USB:                CH340 (auto-reset capable)
 Power:              12V (motors), 5V (logic)
@@ -446,10 +447,10 @@ apex_predator_cobot/
 ├── quick_swap_sliding_lock.f3d # Mechanical design
 ├── stepper_cycloid_v1.f3z      # Gearbox design
 │
-└── Legacy Code
-    ├── ramps_cobot_advanced.ino # Previous firmware version
+└── Reference Code
+    ├── ramps_cobot_advanced.ino # Alternative RAMPS implementation
     ├── apex_demo_path.py        # Demo path planner
-    └── [other v1.0 files]
+    └── [other reference files]
 ```
 
 ---
@@ -543,6 +544,7 @@ Hand Detected: Not Detected
 | **Torque (Shoulder/Elbow)** | 112 kg-cm | 5.6 kg-cm × 20:1 |
 | **Torque (Base)** | 5.6 kg-cm | 1:1 ratio |
 | **Micro-step Resolution** | 0.0225° | 1600 µsteps/rev |
+| **Shield** | RAMPS 1.6 | Full compatibility |
 
 ---
 
@@ -582,10 +584,10 @@ Hand Detected: Not Detected
 
 ## 📝 Version History
 
-| Version | Date | Changes |
-|---------|------|---------|
-| **2.0.0** | Feb 26, 2026 | **MAJOR REFACTOR** - Master/Slave Handshake Protocol, kinematic safety, autonomous homing |
-| 1.0.0 | Earlier | Initial prototype (blind serial streaming) |
+| Version | Date | Hardware | Changes |
+|---------|------|----------|----------|
+| **2.0.0** | Feb 26, 2026 | RAMPS 1.6 | **MAJOR REFACTOR** - Master/Slave Handshake Protocol, kinematic safety, autonomous homing |
+| 1.0.0 | Earlier | RAMPS 1.4 | Initial prototype (blind serial streaming) |
 
 ### Upgrade Notes (v1.0 → v2.0)
 
@@ -676,6 +678,30 @@ cat apex_predator_engine.log
 
 ---
 
+---
+
+## ⚙️ Hardware Details - RAMPS 1.6
+
+### Pin Configuration (RAMPS 1.6)
+```
+X-Axis (Base):      Step: 54, Dir: 55, Enable: 38
+Y-Axis (Shoulder):  Step: 60, Dir: 61, Enable: 56
+Z-Axis (Elbow):     Step: 46, Dir: 48, Enable: 62
+
+Limit Switches:
+X-MIN: Pin 3   (INPUT_PULLUP)
+Y-MIN: Pin 14  (INPUT_PULLUP)
+Z-MIN: Pin 18  (INPUT_PULLUP)
+```
+
+### Power Distribution (RAMPS 1.6)
+- **Motor Power:** 12V / 4A per axis (via power connectors)
+- **Logic Power:** 5V / 2A (via USB or separate supply)
+- **Total Current:** ~15A (under load)
+
+---
+
 **STATUS: ✅ PRODUCTION READY**  
+**Hardware Shield:** RAMPS 1.6  
 **Last Updated: February 26, 2026**  
 **Repository:** https://github.com/Deepushine/apex_predator_cobot
