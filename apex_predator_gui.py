@@ -167,7 +167,23 @@ class ApexPredatorGUI(QMainWindow):
         
         self.btn_home = QPushButton("🏠 Home")
         self.btn_home.clicked.connect(self.home_robot)
-        controls_layout.addWidget(self.btn_home, 2, 1)
+        controls_layout.addWidget(self.btn_home, 2, 0)
+        
+        self.btn_home_all = QPushButton("🏠 HOME ALL JOINTS")
+        self.btn_home_all.setMinimumHeight(40)
+        self.btn_home_all.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        self.btn_home_all.clicked.connect(self.home_all_joints)
+        controls_layout.addWidget(self.btn_home_all, 2, 1)
         
         # Motor controls
         self.btn_enable_motors = QPushButton("⚡ Enable Motors")
@@ -490,28 +506,48 @@ class ApexPredatorGUI(QMainWindow):
         self.log(f"Teaching mode: {'STARTED' if self.engine.state == SystemState.TEACHING_MODE else 'STOPPED'}")
     
     def home_robot(self):
-        """Home the robot"""
-        self.engine.send_command("HOME")
-        self.log("Homing robot...")
+        """Home a single joint (legacy - use home_all_joints instead)"""
+        self.log("Warning: Use HOME ALL JOINTS button to home all axes simultaneously")
+        self.home_all_joints()
+    
+    def home_all_joints(self):
+        """Home all joints using autonomous double-tap homing"""
+        self.log("🔄 Initiating autonomous homing (double-tap protocol)...")
+        if self.engine.send_home_command():
+            self.log("✓ All joints homed successfully")
+            # Reset sliders to 0
+            self.slider_j1.setValue(0)
+            self.slider_j2.setValue(0)
+            self.slider_j3.setValue(0)
+        else:
+            self.log("✗ Homing failed or timed out")
     
     def enable_motors(self):
         """Enable motors"""
-        self.engine.send_command("EN")
-        self.log("Motors enabled")
+        if self.engine.enable_motors():
+            self.log("Motors enabled")
+        else:
+            self.log("Failed to enable motors")
     
     def disable_motors(self):
         """Disable motors"""
-        self.engine.send_command("DIS")
-        self.log("Motors disabled")
+        if self.engine.disable_motors():
+            self.log("Motors disabled")
+        else:
+            self.log("Failed to disable motors")
     
     def toggle_heater(self):
         """Toggle heater"""
         if self.engine.hardware_feedback.get('heater_enabled', False):
-            self.engine.send_command("HEAT_OFF")
-            self.log("Heater turned OFF")
+            if self.engine.disable_heater():
+                self.log("Heater turned OFF")
+            else:
+                self.log("Failed to turn off heater")
         else:
-            self.engine.send_command("HEAT_ON")
-            self.log("Heater turned ON")
+            if self.engine.enable_heater():
+                self.log("Heater turned ON")
+            else:
+                self.log("Failed to turn on heater")
     
     def change_end_effector(self, index):
         """Change end effector type"""
@@ -528,31 +564,33 @@ class ApexPredatorGUI(QMainWindow):
     def test_motor(self, joint):
         """Test individual motor movement"""
         # Enable motors first
-        self.engine.send_command("EN")
+        self.engine.enable_motors()
         time.sleep(0.2)
         
-        # Move to 45 degrees
-        self.engine.send_command(f"J{joint}:45")
-        self.log(f"Testing Joint {joint}: Moving to 45°")
-        time.sleep(1)
+        # Test each joint at +45, -45, and 0 degrees
+        test_positions = [45, -45, 0]
         
-        # Move back to -45 degrees
-        self.engine.send_command(f"J{joint}:-45")
-        self.log(f"Testing Joint {joint}: Moving to -45°")
-        time.sleep(1)
-        
-        # Return to home
-        self.engine.send_command(f"J{joint}:0")
-        self.log(f"Testing Joint {joint}: Returning to 0°")
+        for angle in test_positions:
+            self.log(f"Testing Joint {joint}: Moving to {angle}°")
+            # Build a move command - for single joint test, move that joint and keep others at 0
+            self.engine.send_move_command(angle if joint == 1 else 0, 
+                                         angle if joint == 2 else 0,
+                                         angle if joint == 3 else 0)
+            time.sleep(1)
     
     def manual_joint_move(self, joint, value):
         """Manual joint movement via sliders"""
         label = getattr(self, f'slider_j{joint}_label')
         label.setText(f"{value}°")
         
-        # Send direct command - simple and works
-        self.engine.send_command(f"J{joint}:{value}")
-        self.log(f"Moved Joint {joint} to {value}°")
+        # Get current slider values for all joints
+        x_angle = self.slider_j1.value()
+        y_angle = self.slider_j2.value()
+        z_angle = self.slider_j3.value()
+        
+        # Send move command with all three joint angles
+        if not self.engine.send_move_command(x_angle, y_angle, z_angle):
+            self.log(f"Move command rejected (outside safe limits)")
     
     # ═══════════════════════════════════════════════════════════════
     # UTILITY FUNCTIONS
@@ -615,18 +653,20 @@ class ApexPredatorGUI(QMainWindow):
         """Show about dialog"""
         about_text = """
         <h2>APEX PREDATOR Control Center</h2>
-        <p><b>Version:</b> 1.0.0</p>
-        <p><b>Description:</b> AI-Powered Collaborative Robot Control System</p>
+        <p><b>Version:</b> 2.0.0 (Master/Slave Handshake Protocol)</p>
+        <p><b>Description:</b> Industrial Robotics Control with Double-Tap Autonomous Homing</p>
         <p><b>Features:</b></p>
         <ul>
+            <li>Blocking handshake protocol for zero-fail communication</li>
+            <li>Autonomous double-tap homing sequence</li>
+            <li>Kinematic safety envelopes (soft limits)</li>
             <li>Real-time computer vision</li>
             <li>Hand tracking and safety monitoring</li>
-            <li>Automatic task recognition</li>
-            <li>Teaching and playback modes</li>
             <li>Manual control override</li>
         </ul>
-        <p><b>Hardware:</b> Arduino Mega 2560 + RAMPS 1.6 + 4x NEMA17</p>
-        <p><b>Developed for advanced cobot applications</b></p>
+        <p><b>Hardware:</b> Arduino Mega 2560 + RAMPS 1.4 + 3x NEMA17 RMCS-1010 (5.6kg-cm)</p>
+        <p><b>Drivers:</b> DRV8825 @ 1/8 Microstepping, Vref=0.73V</p>
+        <p><b>Gearboxes:</b> Base 1:1, Shoulder 20:1, Elbow 20:1</p>
         """
         QMessageBox.about(self, "About APEX PREDATOR", about_text)
     

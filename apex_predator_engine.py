@@ -211,14 +211,7 @@ class ApexPredatorEngine:
             )
             time.sleep(2)  # Wait for Arduino reset
             logger.info(f"✓ Serial connection established on {Config.SERIAL_PORT}")
-            
-            # Start heartbeat thread
-            self.heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
-            self.heartbeat_thread.start()
-            
-            # Start feedback receiver thread
-            self.feedback_thread = threading.Thread(target=self.receive_feedback_loop, daemon=True)
-            self.feedback_thread.start()
+            logger.info("✓ Ready for Master/Slave handshake protocol")
             
             return True
         except Exception as e:
@@ -269,91 +262,143 @@ class ApexPredatorEngine:
             return False
     
     # ═══════════════════════════════════════════════════════════════
-    # COMMUNICATION
+    # COMMUNICATION - MASTER/SLAVE HANDSHAKE PROTOCOL
     # ═══════════════════════════════════════════════════════════════
     
-    def send_command(self, command):
-        """Send command to Arduino"""
+    def send_and_wait(self, command, timeout=None):
+        """
+        BLOCKING HANDSHAKE: Send command and wait for OK response.
+        
+        This is the PRIMARY communication method for the new architecture.
+        Python blocks until Arduino acknowledges successful execution via "OK".
+        
+        Args:
+            command (str): Command to send (e.g., "<MOVE X45.0 Y90.0 Z-30.0>" or "HOME")
+            timeout (float): Timeout in seconds (default: config.json handshake_timeout)
+        
+        Returns:
+            bool: True if OK received, False if timeout or error
+        """
+        if timeout is None:
+            timeout = self.config.get('communication', {}).get('handshake_timeout', 5.0)
+        
+        if not self.serial:
+            logger.error("Serial not initialized - cannot send command")
+            return False
+        
         try:
             with self.serial_lock:
-                self.serial.write(f"{command}\n".encode())
+                # Send command with newline terminator
+                self.serial.reset_input_buffer()  # Clear any stale data
+                cmd_str = f"{command}\n"
+                self.serial.write(cmd_str.encode())
                 logger.debug(f"TX: {command}")
+                
+                # BLOCKING WAIT for OK response
+                start_time = time.time()
+                while time.time() - start_time < timeout:
+                    if self.serial.in_waiting:
+                        line = self.serial.readline().decode('utf-8').strip()
+                        logger.debug(f"RX: {line}")
+                        
+                        if line == "OK":
+                            logger.info(f"✓ Command executed: {command}")
+                            return True
+                        elif line.startswith("ERR"):
+                            logger.error(f"✗ Command rejected: {line}")
+                            return False
+                    
+                    time.sleep(0.01)  # Small sleep to prevent busy-waiting
+                
+                logger.error(f"✗ Handshake timeout ({timeout}s) for command: {command}")
+                return False
+                
         except Exception as e:
-            logger.error(f"Send command error: {e}")
+            logger.error(f"Handshake error: {e}")
+            return False
     
-    def send_joint_command(self, joint, value):
-        """Send joint command with axis translation"""
-        # Get the axis for this joint from config
-        joint_key = f"joint{joint}"
-        axis_name = self.joint_mapping.get(joint_key, f"joint{joint}")
+    def send_move_command(self, x_angle, y_angle, z_angle):
+        """
+        Send a MOVE command with three joint angles (X, Y, Z).
+        Validates against kinematic limits before sending.
         
-        # Get the pin for this axis
-        pin = self.motor_pins.get(axis_name, f"J{joint}")
+        Args:
+            x_angle (float): Base rotation angle (-180 to +180°)
+            y_angle (float): Shoulder lift angle (-30 to +90°)
+            z_angle (float): Elbow extension angle (-90 to +90°)
         
-        # Extract the pin number (e.g., "J13" -> "13")
-        pin_num = pin.replace("J", "") if pin.startswith("J") else pin
+        Returns:
+            bool: True if move executed successfully
+        """
+        # Validate against kinematic limits
+        limits = self.config.get('kinematic_limits', {})
         
-        # Send command with correct pin
-        command = f"{pin}:{value}"
-        self.send_command(command)
-        logger.info(f"Joint {joint} ({axis_name} @ {pin}) -> {value}°")
+        x_min = limits.get('joint_x_base', {}).get('min_angle', -180)
+        x_max = limits.get('joint_x_base', {}).get('max_angle', 180)
+        y_min = limits.get('joint_y_shoulder', {}).get('min_angle', -30)
+        y_max = limits.get('joint_y_shoulder', {}).get('max_angle', 90)
+        z_min = limits.get('joint_z_elbow', {}).get('min_angle', -90)
+        z_max = limits.get('joint_z_elbow', {}).get('max_angle', 90)
+        
+        # Check bounds
+        if not (x_min <= x_angle <= x_max):
+            logger.warning(f"X angle {x_angle}° out of bounds [{x_min}, {x_max}]")
+            return False
+        if not (y_min <= y_angle <= y_max):
+            logger.warning(f"Y angle {y_angle}° out of bounds [{y_min}, {y_max}]")
+            return False
+        if not (z_min <= z_angle <= z_max):
+            logger.warning(f"Z angle {z_angle}° out of bounds [{z_min}, {z_max}]")
+            return False
+        
+        # Build command: <MOVE X45.0 Y90.0 Z-30.0>
+        command = f"<MOVE X{x_angle:.1f} Y{y_angle:.1f} Z{z_angle:.1f}>"
+        
+        return self.send_and_wait(command)
     
-    def heartbeat_loop(self):
-        """Send periodic heartbeat to hardware"""
-        while True:
-            try:
-                current_time = time.time()
-                if current_time - self.last_heartbeat >= Config.HEARTBEAT_INTERVAL:
-                    self.send_command("HB")
-                    self.last_heartbeat = current_time
-                time.sleep(0.1)
-            except Exception as e:
-                logger.error(f"Heartbeat error: {e}")
-    
-    def receive_feedback_loop(self):
-        """Receive and parse feedback from Arduino"""
-        while True:
-            try:
-                if self.serial.in_waiting:
-                    line = self.serial.readline().decode('utf-8').strip()
-                    self.parse_feedback(line)
-                time.sleep(0.01)
-            except Exception as e:
-                logger.error(f"Receive feedback error: {e}")
-    
-    def parse_feedback(self, line):
-        """Parse feedback from Arduino"""
-        logger.debug(f"RX: {line}")
+    def send_home_command(self):
+        """
+        Send HOME command to trigger autonomous double-tap homing sequence.
+        Arduino will:
+        1. Move each axis to limit switch at fast speed (initial hit)
+        2. Back off 5 degrees
+        3. Approach limit switch slowly a second time (fine zero)
+        4. Return "OK" when complete
         
-        if line.startswith("FB:"):
-            # Parse feedback: FB:j1,j2,j3,j4,temp,dist,mode,motors,heater
-            parts = line[3:].split(',')
-            if len(parts) >= 9:
-                self.hardware_feedback = {
-                    'j1': int(parts[0]),
-                    'j2': int(parts[1]),
-                    'j3': int(parts[2]),
-                    'j4': int(parts[3]),
-                    'temp': float(parts[4]),
-                    'distance': int(parts[5]),
-                    'mode': int(parts[6]),
-                    'motors_enabled': int(parts[7]) == 1,
-                    'heater_enabled': int(parts[8]) == 1
-                }
-        
-        elif line.startswith("STS:"):
-            status = line[4:]
-            logger.info(f"Hardware Status: {status}")
-            
-            if "EMERGENCY_STOP" in status:
-                self.emergency_stop = True
-                self.state = SystemState.EMERGENCY_STOP
-            elif "SYSTEM_READY" in status:
-                logger.info("Hardware is ready")
+        Returns:
+            bool: True if homing succeeded
+        """
+        logger.info("Initiating autonomous homing sequence...")
+        return self.send_and_wait("HOME", timeout=30.0)  # Longer timeout for homing
+    
+    def open_gripper(self):
+        """Open gripper end effector"""
+        return self.send_and_wait("GRIPPER_OPEN")
+    
+    def close_gripper(self):
+        """Close gripper end effector"""
+        return self.send_and_wait("GRIPPER_CLOSE")
+    
+    def enable_heater(self):
+        """Enable soldering iron heater"""
+        return self.send_and_wait("HEATER_ON")
+    
+    def disable_heater(self):
+        """Disable soldering iron heater"""
+        return self.send_and_wait("HEATER_OFF")
+    
+    def enable_motors(self):
+        """Enable motor drivers"""
+        return self.send_and_wait("MOTORS_EN")
+    
+    def disable_motors(self):
+        """Disable motor drivers (safe state)"""
+        return self.send_and_wait("MOTORS_DIS")
     
     def check_hardware_ready(self):
         """Check if hardware is ready"""
-        return len(self.hardware_feedback) > 0
+        # With handshake protocol, hardware is ready after first successful command
+        return True
     
     # ═══════════════════════════════════════════════════════════════
     # VISION PROCESSING
@@ -469,7 +514,7 @@ class ApexPredatorEngine:
             
             # Enable heater
             if not self.solder_preheating:
-                self.send_command("HEAT_ON")
+                self.enable_heater()
                 self.solder_preheating = True
                 self.heater_start_time = time.time()
                 logger.info("Preheating soldering iron...")
@@ -481,7 +526,7 @@ class ApexPredatorEngine:
                 if temp >= Config.SOLDER_TEMP_TARGET * 0.9:  # 90% of target
                     logger.info(f"✓ Soldering iron ready at {temp}°C")
                     self.task_active = True
-                    self.send_command("MODE:AUTO")
+                    self.state = SystemState.AUTO_MODE
                 else:
                     logger.info(f"Heating... {temp}°C / {Config.SOLDER_TEMP_TARGET}°C")
         
@@ -542,7 +587,7 @@ class ApexPredatorEngine:
             self.safety_violations = violations
             if self.state == SystemState.AUTO_MODE:
                 logger.warning(f"Safety violation: {violations}")
-                self.send_command("DIS")  # Disable motors
+                self.disable_motors()  # Disable motors
                 # Don't change state, just pause
         else:
             self.safety_violations = []
@@ -665,21 +710,17 @@ class ApexPredatorEngine:
         """Toggle automatic mode"""
         if self.state == SystemState.AUTO_MODE:
             self.state = SystemState.READY
-            self.send_command("MODE:MANUAL")
             logger.info("Switched to MANUAL mode")
         else:
             self.state = SystemState.AUTO_MODE
-            self.send_command("MODE:AUTO")
             logger.info("Switched to AUTO mode")
     
     def toggle_teaching_mode(self):
         """Toggle teaching mode"""
         if self.state == SystemState.TEACHING_MODE:
-            self.send_command("TEACH_STOP")
             self.state = SystemState.READY
             logger.info("Teaching mode stopped")
         else:
-            self.send_command("TEACH_START")
             self.state = SystemState.TEACHING_MODE
             self.recording_session = True
             logger.info("Teaching mode started")
@@ -688,7 +729,7 @@ class ApexPredatorEngine:
         """Trigger emergency stop"""
         self.emergency_stop = True
         self.state = SystemState.EMERGENCY_STOP
-        self.send_command("DIS")
+        self.disable_motors()
         logger.warning("EMERGENCY STOP TRIGGERED")
     
     def shutdown(self):
@@ -699,8 +740,8 @@ class ApexPredatorEngine:
         
         # Disable motors and heater
         if self.serial:
-            self.send_command("DIS")
-            self.send_command("HEAT_OFF")
+            self.disable_motors()
+            self.disable_heater()
             time.sleep(0.5)
             self.serial.close()
         

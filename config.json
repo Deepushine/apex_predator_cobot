@@ -1,8 +1,8 @@
 {
   "system": {
     "name": "APEX_PREDATOR",
-    "version": "1.0.0",
-    "description": "AI-Powered Collaborative Robot System"
+    "version": "2.0.0",
+    "description": "Master/Slave Handshake Protocol - Industrial Robotics Control"
   },
   
   "hardware": {
@@ -10,48 +10,90 @@
       "board": "Arduino Mega 2560",
       "serial_port": "COM3",
       "baud_rate": 115200,
-      "heartbeat_interval": 0.5
-    },
-    "motor_pins": {
-      "x_axis": "J13",
-      "y_axis": "J15",
-      "z_axis": "J17"
-    },
-    "joint_mapping": {
-      "joint1": "x_axis",
-      "joint2": "y_axis",
-      "joint3": "z_axis",
-      "joint4": "z_axis"
+      "handshake_timeout": 5.0
     },
     "motors": {
-      "type": "NEMA17",
-      "model": "ET6131",
-      "rated_current": 1.0,
+      "type": "NEMA 17 RMCS-1010",
+      "torque_rating_kg_cm": 5.6,
       "steps_per_rev": 200,
-      "microsteps": 16,
-      "gear_ratio": 20,
-      "max_speed": 1000,
-      "acceleration": 500
+      "microsteps": 8,
+      "max_rpm": 100,
+      "notes": "DRV8825 drivers set to 1/8 microstepping. Vref tuned to 0.73V (1.46A max current)"
     },
-    "sensors": {
-      "tof": {
-        "enabled": true,
-        "model": "VL53L0X",
-        "i2c_address": "0x29"
+    "drivers": {
+      "model": "DRV8825",
+      "microstep_mode": 8,
+      "vref_voltage": 0.73,
+      "max_current": 1.46,
+      "notes": "One driver per motor (Base, Shoulder, Elbow)"
+    },
+    "gear_ratios": {
+      "base": 1.0,
+      "shoulder": 20.0,
+      "elbow": 20.0,
+      "notes": "Gear reduction increases torque and precision. Shoulder/Elbow for heavy lifting."
+    },
+    "limit_switches": {
+      "enabled": true,
+      "type": "KW12 Mechanical",
+      "logic": "Normally Open (NO), Two-Wire",
+      "pins": {
+        "x_min": 3,
+        "y_min": 14,
+        "z_min": 18
       },
-      "temperature": {
-        "enabled": true,
-        "model": "MAX31855",
-        "pin": 53
-      },
-      "endstops": {
-        "enabled": true,
-        "type": "mechanical",
-        "normally_open": true
-      }
+      "debounce_ms": 20,
+      "homing_approach_speed": 10,
+      "homing_backoff_degrees": 5,
+      "notes": "Double-tap homing protocol: initial fast hit, then back off and slow approach"
     }
   },
-  
+
+  "kinematic_limits": {
+    "notes": "Kinematic Shield - prevents hardware damage and collision",
+    "joint_x_base": {
+      "name": "Base Rotation",
+      "min_angle": -180,
+      "max_angle": 180,
+      "unit": "degrees",
+      "speed_limit": 90,
+      "acceleration_limit": 45
+    },
+    "joint_y_shoulder": {
+      "name": "Shoulder Lift",
+      "min_angle": -30,
+      "max_angle": 90,
+      "unit": "degrees",
+      "speed_limit": 60,
+      "acceleration_limit": 30,
+      "notes": "Constrained to prevent tipping. -30° to 90° safe range."
+    },
+    "joint_z_elbow": {
+      "name": "Elbow Extension",
+      "min_angle": -90,
+      "max_angle": 90,
+      "unit": "degrees",
+      "speed_limit": 45,
+      "acceleration_limit": 22,
+      "notes": "Full range for articulation, constrained by shoulder limits."
+    }
+  },
+
+  "communication": {
+    "protocol": "Master/Slave Handshake",
+    "command_format": "<MOVE X{angle} Y{angle} Z{angle}>",
+    "home_command": "HOME",
+    "command_terminator": "\n",
+    "response_ok": "OK",
+    "response_error": "ERR",
+    "heartbeat_disabled": "Zero-fail handshake eliminates need for heartbeat",
+    "examples": {
+      "move_command": "<MOVE X45.0 Y90.0 Z-30.0>",
+      "home_all_joints": "HOME",
+      "python_blocks_for_response": "Python waits in blocking loop for 'OK'"
+    }
+  },
+
   "camera": {
     "index": 0,
     "width": 1280,
@@ -59,7 +101,7 @@
     "fps": 30,
     "auto_exposure": true
   },
-  
+
   "safety": {
     "min_hand_distance": 200,
     "safe_zone_radius": 150,
@@ -67,36 +109,9 @@
     "emergency_stop_enabled": true,
     "proximity_alert_enabled": true,
     "temperature_limit": 400,
-    "heartbeat_timeout": 1.0
+    "handshake_timeout": 5.0
   },
-  
-  "joint_limits": {
-    "joint1": {
-      "min": -180,
-      "max": 180,
-      "speed": 1000,
-      "acceleration": 500
-    },
-    "joint2": {
-      "min": -90,
-      "max": 90,
-      "speed": 1000,
-      "acceleration": 500
-    },
-    "joint3": {
-      "min": -90,
-      "max": 90,
-      "speed": 1000,
-      "acceleration": 500
-    },
-    "joint4": {
-      "min": -180,
-      "max": 180,
-      "speed": 1500,
-      "acceleration": 800
-    }
-  },
-  
+
   "end_effectors": {
     "soldering_iron": {
       "preheat_time": 30,
@@ -112,7 +127,7 @@
       "force_limit": 5
     }
   },
-  
+
   "vision": {
     "hand_tracking": {
       "enabled": true,
@@ -127,26 +142,7 @@
       "detection_cooldown": 1.0
     }
   },
-  
-  "task_recognition": {
-    "soldering": {
-      "enabled": true,
-      "triggers": ["PCB", "board", "wire"],
-      "auto_heat": true
-    },
-    "assembly": {
-      "enabled": false,
-      "triggers": ["part", "component"]
-    }
-  },
-  
-  "teaching_mode": {
-    "max_points": 500,
-    "recording_rate": 5,
-    "interpolation": "linear",
-    "save_directory": "./programs"
-  },
-  
+
   "logging": {
     "level": "INFO",
     "console_output": true,
@@ -155,7 +151,7 @@
     "max_file_size": 10485760,
     "backup_count": 5
   },
-  
+
   "gui": {
     "theme": "dark",
     "video_fps": 30,
