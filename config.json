@@ -1,0 +1,166 @@
+{
+  "system": {
+    "name": "APEX_PREDATOR",
+    "version": "1.0.0",
+    "description": "AI-Powered Collaborative Robot System"
+  },
+  
+  "hardware": {
+    "arduino": {
+      "board": "Arduino Mega 2560",
+      "serial_port": "COM3",
+      "baud_rate": 115200,
+      "heartbeat_interval": 0.5
+    },
+    "motor_pins": {
+      "x_axis": "J13",
+      "y_axis": "J15",
+      "z_axis": "J17"
+    },
+    "joint_mapping": {
+      "joint1": "x_axis",
+      "joint2": "y_axis",
+      "joint3": "z_axis",
+      "joint4": "z_axis"
+    },
+    "motors": {
+      "type": "NEMA17",
+      "model": "ET6131",
+      "rated_current": 1.0,
+      "steps_per_rev": 200,
+      "microsteps": 16,
+      "gear_ratio": 20,
+      "max_speed": 1000,
+      "acceleration": 500
+    },
+    "sensors": {
+      "tof": {
+        "enabled": true,
+        "model": "VL53L0X",
+        "i2c_address": "0x29"
+      },
+      "temperature": {
+        "enabled": true,
+        "model": "MAX31855",
+        "pin": 53
+      },
+      "endstops": {
+        "enabled": true,
+        "type": "mechanical",
+        "normally_open": true
+      }
+    }
+  },
+  
+  "camera": {
+    "index": 0,
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "auto_exposure": true
+  },
+  
+  "safety": {
+    "min_hand_distance": 200,
+    "safe_zone_radius": 150,
+    "max_velocity": 100,
+    "emergency_stop_enabled": true,
+    "proximity_alert_enabled": true,
+    "temperature_limit": 400,
+    "heartbeat_timeout": 1.0
+  },
+  
+  "joint_limits": {
+    "joint1": {
+      "min": -180,
+      "max": 180,
+      "speed": 1000,
+      "acceleration": 500
+    },
+    "joint2": {
+      "min": -90,
+      "max": 90,
+      "speed": 1000,
+      "acceleration": 500
+    },
+    "joint3": {
+      "min": -90,
+      "max": 90,
+      "speed": 1000,
+      "acceleration": 500
+    },
+    "joint4": {
+      "min": -180,
+      "max": 180,
+      "speed": 1500,
+      "acceleration": 800
+    }
+  },
+  
+  "end_effectors": {
+    "soldering_iron": {
+      "preheat_time": 30,
+      "target_temperature": 350,
+      "follow_distance": 50,
+      "pwm_pin": 9,
+      "enable_pin": 8
+    },
+    "gripper": {
+      "servo_pin": 11,
+      "open_angle": 90,
+      "close_angle": 0,
+      "force_limit": 5
+    }
+  },
+  
+  "vision": {
+    "hand_tracking": {
+      "enabled": true,
+      "max_hands": 2,
+      "detection_confidence": 0.7,
+      "tracking_confidence": 0.5
+    },
+    "object_detection": {
+      "enabled": true,
+      "model": "custom",
+      "confidence_threshold": 0.7,
+      "detection_cooldown": 1.0
+    }
+  },
+  
+  "task_recognition": {
+    "soldering": {
+      "enabled": true,
+      "triggers": ["PCB", "board", "wire"],
+      "auto_heat": true
+    },
+    "assembly": {
+      "enabled": false,
+      "triggers": ["part", "component"]
+    }
+  },
+  
+  "teaching_mode": {
+    "max_points": 500,
+    "recording_rate": 5,
+    "interpolation": "linear",
+    "save_directory": "./programs"
+  },
+  
+  "logging": {
+    "level": "INFO",
+    "console_output": true,
+    "file_output": true,
+    "log_file": "apex_predator.log",
+    "max_file_size": 10485760,
+    "backup_count": 5
+  },
+  
+  "gui": {
+    "theme": "dark",
+    "video_fps": 30,
+    "status_update_rate": 10,
+    "window_width": 1600,
+    "window_height": 900
+  }
+}
