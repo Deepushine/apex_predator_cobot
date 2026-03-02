@@ -1,358 +1,281 @@
 /*
 ═══════════════════════════════════════════════════════════════════
-                    APEX_PREDATOR v2.0 FIRMWARE
-                  Master/Slave Handshake Protocol
-═══════════════════════════════════════════════════════════════════
+                 APEX_PREDATOR v2.1 FIRMWARE
+               Master/Slave Handshake Protocol
 
-Arduino Mega 2560 + RAMPS 1.6 + DRV8825 Stepper Drivers
-3x NEMA 17 RMCS-1010 motors (5.6 kg-cm torque)
+FIX LOG v2.1:
+  BUG 1 FIXED: homing flags never cleared → now fully blocking/synchronous
+  BUG 2 FIXED: command_received shared flag → split into move_command_pending
+  BUG 3 FIXED: APEX_READY never sent → added to end of setup()
+  BUG 4 FIXED: EN/DIS not recognized → added as aliases for MOTORS_EN/DIS
+  BUG 5 FIXED: handle_homing() double-execution → removed from loop()
 
-HARDWARE CONFIGURATION:
-- Base (X):     Motor 1 via DRV8825 (Step/Dir pins)
-- Shoulder (Y): Motor 2 via DRV8825 (Step/Dir pins)
-- Elbow (Z):    Motor 3 via DRV8825 (Step/Dir pins)
-
-LIMIT SWITCHES (Normally Open, Two-Wire):
-- X_MIN (Base):     Pin 3  (INPUT_PULLUP)
-- Y_MIN (Shoulder): Pin 14 (INPUT_PULLUP)
-- Z_MIN (Elbow):    Pin 18 (INPUT_PULLUP)
-
-PROTOCOL:
-- Python sends: <MOVE X45.0 Y90.0 Z-30.0>
-- Arduino executes move and replies: OK
-- Python BLOCKS until OK received
-- Double-tap homing on HOME command
-
+Hardware: Arduino Mega 2560 + RAMPS 1.6
+Drivers:  DRV8825 @ 1/8 microstep, Vref=0.73V
+Motors:   3x NEMA17 RMCS-1010 (5.6 kg-cm)
+Switches: MS-114 SPDT wired NO (COM to GND, NO to signal pin)
 ═══════════════════════════════════════════════════════════════════
 */
 
 #include <AccelStepper.h>
+#include <Servo.h>
 
-// ═══════════════════════════════════════════════════════════════
-// PIN DEFINITIONS
-// ═══════════════════════════════════════════════════════════════
+// ── PINS ─────────────────────────────────────────────────────────
+#define X_STEP_PIN    54
+#define X_DIR_PIN     55
+#define Y_STEP_PIN    60
+#define Y_DIR_PIN     61
+#define Z_STEP_PIN    46
+#define Z_DIR_PIN     48
+#define X_ENABLE_PIN  38
+#define Y_ENABLE_PIN  56
+#define Z_ENABLE_PIN  62
+#define X_MIN_PIN     3
+#define Y_MIN_PIN     14
+#define Z_MIN_PIN     18
+// 2x MG90S diagonal opposite — top-left + bottom-right
+#define SRV1_PIN      4    // Top Left
+#define SRV2_PIN      11   // Bottom Right (diagonal)
+#define TOOL_ID_PIN   A0
 
-// RAMPS 1.6 Stepper Motor Control Pins
-#define X_STEP_PIN     54
-#define X_DIR_PIN      55
-#define Y_STEP_PIN     60
-#define Y_DIR_PIN      61
-#define Z_STEP_PIN     46
-#define Z_DIR_PIN      48
-
-// Limit Switches
-#define X_MIN_PIN      3   // Base rotation limit
-#define Y_MIN_PIN      14  // Shoulder lift limit
-#define Z_MIN_PIN      18  // Elbow extension limit
-
-// Enable pins
-#define X_ENABLE_PIN   38
-#define Y_ENABLE_PIN   56
-#define Z_ENABLE_PIN   62
-
-// ═══════════════════════════════════════════════════════════════
-// MOTOR CONFIGURATION
-// ═══════════════════════════════════════════════════════════════
-
-// NEMA 17 RMCS-1010 @ 1/8 microstepping
-#define STEPS_PER_REV          200
-#define MICROSTEPS             8
-#define MICROSTEPS_PER_REV     (STEPS_PER_REV * MICROSTEPS)   // 1600
-
-// Gear ratios
-#define GEAR_RATIO_X  1.0
-#define GEAR_RATIO_Y  20.0
-#define GEAR_RATIO_Z  20.0
-
-// Steps per degree for each axis
-#define MICROSTEPS_PER_DEG_X  (MICROSTEPS_PER_REV * GEAR_RATIO_X / 360.0)   //  4.44
-#define MICROSTEPS_PER_DEG_Y  (MICROSTEPS_PER_REV * GEAR_RATIO_Y / 360.0)   // 88.89
-#define MICROSTEPS_PER_DEG_Z  (MICROSTEPS_PER_REV * GEAR_RATIO_Z / 360.0)   // 88.89
-
-// Speed settings
+// ── MOTOR CONFIG ─────────────────────────────────────────────────
+#define STEPS_PER_REV     200
+#define MICROSTEPS        8
+#define GEAR_YZ           20.0
+#define USTEPS_PER_REV    (STEPS_PER_REV * MICROSTEPS)
+#define UDEG_X            (USTEPS_PER_REV * 1.0  / 360.0)  // 4.44
+#define UDEG_YZ           (USTEPS_PER_REV * GEAR_YZ / 360.0)  // 88.89
 #define MAX_SPEED         1000.0
 #define NORMAL_ACCEL      500.0
-#define HOMING_FAST_SPEED 500.0
-#define HOMING_SLOW_SPEED 100.0
+#define HOMING_FAST       500.0
+#define HOMING_SLOW       100.0
 #define HOMING_ACCEL      300.0
+#define BACKOFF_DEG       5.0
+#define DEBOUNCE_MS       20
+#define FAN_PIN 9 // 12V Cooling Fan on D9
 
-// Homing parameters
-#define HOMING_BACKOFF_DEGREES 5.0
-#define HOMING_DEBOUNCE_MS     20
+// ── KINEMATIC LIMITS ─────────────────────────────────────────────
+#define LIM_X_MIN  -180.0
+#define LIM_X_MAX   180.0
+#define LIM_Y_MIN   -30.0
+#define LIM_Y_MAX    90.0
+#define LIM_Z_MIN   -90.0
+#define LIM_Z_MAX    90.0
 
-// ═══════════════════════════════════════════════════════════════
-// KINEMATIC SAFETY LIMITS
-// ═══════════════════════════════════════════════════════════════
+// ── ATC SERVOS ───────────────────────────────────────────────────
+#define ATC_OPEN    0
+#define ATC_CLOSE   65
+#define ATC_DELAY   4
 
-#define LIMIT_X_MIN  -180.0
-#define LIMIT_X_MAX   180.0
-#define LIMIT_Y_MIN   -30.0
-#define LIMIT_Y_MAX    90.0
-#define LIMIT_Z_MIN   -90.0
-#define LIMIT_Z_MAX    90.0
+// ── GLOBALS ──────────────────────────────────────────────────────
+AccelStepper sx(AccelStepper::DRIVER, X_STEP_PIN, X_DIR_PIN);
+AccelStepper sy(AccelStepper::DRIVER, Y_STEP_PIN, Y_DIR_PIN);
+AccelStepper sz(AccelStepper::DRIVER, Z_STEP_PIN, Z_DIR_PIN);
+Servo srv1, srv2;  // Diagonal pair: top-left + bottom-right
 
-// ═══════════════════════════════════════════════════════════════
-// GLOBAL VARIABLES
-// ═══════════════════════════════════════════════════════════════
+float cx = 0, cy = 0, cz = 0;
+bool atc_locked = false;
+String sbuf = "";
 
-AccelStepper stepper_x(AccelStepper::DRIVER, X_STEP_PIN, X_DIR_PIN);
-AccelStepper stepper_y(AccelStepper::DRIVER, Y_STEP_PIN, Y_DIR_PIN);
-AccelStepper stepper_z(AccelStepper::DRIVER, Z_STEP_PIN, Z_DIR_PIN);
-
-float current_x = 0.0;
-float current_y = 0.0;
-float current_z = 0.0;
-
-// FIX: Separate flag to track whether a move command is waiting for OK
-// (was shared with homing, causing premature OKs)
+// FIX BUG 2: dedicated flag only for MOVE commands
 bool move_command_pending = false;
-
-String serial_buffer = "";
 
 // ═══════════════════════════════════════════════════════════════
 // SETUP
 // ═══════════════════════════════════════════════════════════════
-
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  delay(500);
 
-  // Configure enable pins — start DISABLED (safe)
-  pinMode(X_ENABLE_PIN, OUTPUT);
-  pinMode(Y_ENABLE_PIN, OUTPUT);
-  pinMode(Z_ENABLE_PIN, OUTPUT);
-  digitalWrite(X_ENABLE_PIN, HIGH);
-  digitalWrite(Y_ENABLE_PIN, HIGH);
-  digitalWrite(Z_ENABLE_PIN, HIGH);
+  // Start the cooling fan immediately
+  pinMode(FAN_PIN, OUTPUT);
+  digitalWrite(FAN_PIN, HIGH);
 
-  // Configure limit switches (NO: resting = HIGH, hit = LOW)
+  pinMode(X_ENABLE_PIN, OUTPUT); digitalWrite(X_ENABLE_PIN, LOW);
+  pinMode(Y_ENABLE_PIN, OUTPUT); digitalWrite(Y_ENABLE_PIN, LOW);
+  pinMode(Z_ENABLE_PIN, OUTPUT); digitalWrite(Z_ENABLE_PIN, LOW);
+
+  // MS-114 NO wiring: resting=HIGH, pressed=LOW
   pinMode(X_MIN_PIN, INPUT_PULLUP);
   pinMode(Y_MIN_PIN, INPUT_PULLUP);
   pinMode(Z_MIN_PIN, INPUT_PULLUP);
 
-  // Configure steppers
-  setup_stepper(&stepper_x, MICROSTEPS_PER_DEG_X, "X (Base)");
-  setup_stepper(&stepper_y, MICROSTEPS_PER_DEG_Y, "Y (Shoulder)");
-  setup_stepper(&stepper_z, MICROSTEPS_PER_DEG_Z, "Z (Elbow)");
+  sx.setMaxSpeed(MAX_SPEED); sx.setAcceleration(NORMAL_ACCEL); sx.setCurrentPosition(0);
+  sy.setMaxSpeed(MAX_SPEED); sy.setAcceleration(NORMAL_ACCEL); sy.setCurrentPosition(0);
+  sz.setMaxSpeed(MAX_SPEED); sz.setAcceleration(NORMAL_ACCEL); sz.setCurrentPosition(0);
 
-  // FIX: Send APEX_READY signal that apex_demo_path.py waits for
+  srv1.attach(SRV1_PIN, 500, 2500);   // Top Left
+  srv2.attach(SRV2_PIN, 500, 2500);   // Bottom Right (diagonal)
+  atc_do_unlock();
+
+  Serial.println("=== APEX_PREDATOR v2.1 ===");
+  Serial.println("Motor: RMCS-1010 5.6kgcm @ DRV8825 1/8 microstep");
+  Serial.println("Shield: RAMPS 1.6");
+  Serial.println("Switches: MS-114 NO wiring");
+  Serial.println("ATC: 2x MG90S diagonal pair ready (pins 4 + 11)");
+
+  // FIX BUG 3: boot signal for apex_demo_path.py connect sequence
   Serial.println("APEX_READY");
-}
-
-void setup_stepper(AccelStepper *stepper, float steps_per_deg, const char *axis_name) {
-  stepper->setMaxSpeed(MAX_SPEED);
-  stepper->setAcceleration(NORMAL_ACCEL);
-  stepper->setCurrentPosition(0);
 }
 
 // ═══════════════════════════════════════════════════════════════
 // MAIN LOOP
 // ═══════════════════════════════════════════════════════════════
-
 void loop() {
-  // Always service serial
-  check_serial();
+  read_serial();
+  sx.run();
+  sy.run();
+  sz.run();
 
-  // Run motors
-  stepper_x.run();
-  stepper_y.run();
-  stepper_z.run();
-
-  // FIX: Only send OK once all three axes have stopped,
-  // and only when a move command is actually pending.
-  // Previously, command_received was set true by HOME too,
-  // causing the loop to spam OK as soon as motors paused.
-  if (move_command_pending) {
-    if (!stepper_x.isRunning() && !stepper_y.isRunning() && !stepper_z.isRunning()) {
-      move_command_pending = false;
-      Serial.println("OK");
-      Serial.flush();
-    }
+  // FIX BUG 2: Only MOVE handler sets this flag — homing never does
+  if (move_command_pending && !sx.isRunning() && !sy.isRunning() && !sz.isRunning()) {
+    move_command_pending = false;
+    Serial.println("OK");
+    Serial.flush();
   }
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SERIAL COMMUNICATION
+// SERIAL
 // ═══════════════════════════════════════════════════════════════
-
-void check_serial() {
-  while (Serial.available() > 0) {
-    char incoming = Serial.read();
-    if (incoming == '\n' || incoming == '\r') {
-      if (serial_buffer.length() > 0) {
-        process_command(serial_buffer);
-        serial_buffer = "";
-      }
-    } else {
-      serial_buffer += incoming;
-    }
+void read_serial() {
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (sbuf.length()) { process_cmd(sbuf); sbuf = ""; }
+    } else { sbuf += c; }
   }
 }
 
-void process_command(String cmd) {
+void process_cmd(String cmd) {
   cmd.trim();
-
-  if (cmd.startsWith("<MOVE ")) {
-    handle_move_command(cmd);
-  }
-  else if (cmd == "HOME") {
-    handle_home_command();
-  }
-  // FIX: Added EN / DIS commands used by apex_demo_path.py
-  else if (cmd == "EN" || cmd == "MOTORS_EN") {
-    digitalWrite(X_ENABLE_PIN, LOW);
-    digitalWrite(Y_ENABLE_PIN, LOW);
-    digitalWrite(Z_ENABLE_PIN, LOW);
-    Serial.println("OK");
-  }
-  else if (cmd == "DIS" || cmd == "MOTORS_DIS") {
-    digitalWrite(X_ENABLE_PIN, HIGH);
-    digitalWrite(Y_ENABLE_PIN, HIGH);
-    digitalWrite(Z_ENABLE_PIN, HIGH);
-    Serial.println("OK");
-  }
-  else if (cmd == "GRIPPER_OPEN" || cmd == "GRIPPER_CLOSE") {
-    Serial.println("OK");
-  }
-  else if (cmd == "HEATER_ON" || cmd == "HEATER_OFF") {
-    Serial.println("OK");
-  }
-  else {
-    Serial.println("ERR: Unknown command");
-  }
+  if      (cmd.startsWith("<MOVE"))      handle_move(cmd);
+  else if (cmd == "HOME")               handle_home();       // FIX BUG 1+5
+  else if (cmd == "LOCK")               { atc_do_lock();   Serial.println("OK"); }
+  else if (cmd == "UNLOCK")             { atc_do_unlock(); Serial.println("OK"); }
+  else if (cmd == "TOOL_ID")            { Serial.print("TOOL:"); Serial.println(read_tool_id()); Serial.println("OK"); }
+  // FIX BUG 4: accept both EN and MOTORS_EN, DIS and MOTORS_DIS
+  else if (cmd == "EN"  || cmd == "MOTORS_EN")  { digitalWrite(X_ENABLE_PIN,LOW);  digitalWrite(Y_ENABLE_PIN,LOW);  digitalWrite(Z_ENABLE_PIN,LOW);  Serial.println("OK"); }
+  else if (cmd == "DIS" || cmd == "MOTORS_DIS") { digitalWrite(X_ENABLE_PIN,HIGH); digitalWrite(Y_ENABLE_PIN,HIGH); digitalWrite(Z_ENABLE_PIN,HIGH); Serial.println("OK"); }
+  else if (cmd == "GRIPPER_OPEN" || cmd == "GRIPPER_CLOSE") Serial.println("OK");
+  else if (cmd == "HEATER_ON"   || cmd == "HEATER_OFF")     Serial.println("OK");
+  else { Serial.print("ERR: Unknown: "); Serial.println(cmd); }
 }
 
 // ═══════════════════════════════════════════════════════════════
-// MOVE COMMAND
+// MOVE HANDLER
 // ═══════════════════════════════════════════════════════════════
+void handle_move(String cmd) {
+  float tx = cx, ty = cy, tz = cz;
+  int xi = cmd.indexOf('X'), yi = cmd.indexOf('Y'), zi = cmd.indexOf('Z');
+  if (xi != -1) tx = cmd.substring(xi+1, cmd.indexOf(' ', xi)).toFloat();
+  if (yi != -1) ty = cmd.substring(yi+1, cmd.indexOf(' ', yi)).toFloat();
+  if (zi != -1) tz = cmd.substring(zi+1, cmd.indexOf('>', zi)).toFloat();
 
-void handle_move_command(String cmd) {
-  // Parse: <MOVE X45.0 Y90.0 Z-30.0>
-  float target_x = current_x;
-  float target_y = current_y;
-  float target_z = current_z;
+  if (tx < LIM_X_MIN || tx > LIM_X_MAX) { Serial.println("ERR: X out of bounds"); return; }
+  if (ty < LIM_Y_MIN || ty > LIM_Y_MAX) { Serial.println("ERR: Y out of bounds"); return; }
+  if (tz < LIM_Z_MIN || tz > LIM_Z_MAX) { Serial.println("ERR: Z out of bounds"); return; }
 
-  int x_index = cmd.indexOf('X');
-  if (x_index != -1) {
-    int space_after = cmd.indexOf(' ', x_index);
-    target_x = (space_after != -1)
-      ? cmd.substring(x_index + 1, space_after).toFloat()
-      : cmd.substring(x_index + 1).toFloat();
-  }
+  sx.moveTo((long)(tx * UDEG_X));
+  sy.moveTo((long)(ty * UDEG_YZ));
+  sz.moveTo((long)(tz * UDEG_YZ));
+  cx = tx; cy = ty; cz = tz;
 
-  int y_index = cmd.indexOf('Y');
-  if (y_index != -1) {
-    int space_after = cmd.indexOf(' ', y_index);
-    target_y = (space_after != -1)
-      ? cmd.substring(y_index + 1, space_after).toFloat()
-      : cmd.substring(y_index + 1).toFloat();
-  }
-
-  int z_index = cmd.indexOf('Z');
-  if (z_index != -1) {
-    int end_pos = cmd.indexOf('>', z_index);
-    target_z = (end_pos != -1)
-      ? cmd.substring(z_index + 1, end_pos).toFloat()
-      : cmd.substring(z_index + 1).toFloat();
-  }
-
-  // Kinematic limit check
-  if (target_x < LIMIT_X_MIN || target_x > LIMIT_X_MAX) { Serial.println("ERR: X out of bounds"); return; }
-  if (target_y < LIMIT_Y_MIN || target_y > LIMIT_Y_MAX) { Serial.println("ERR: Y out of bounds"); return; }
-  if (target_z < LIMIT_Z_MIN || target_z > LIMIT_Z_MAX) { Serial.println("ERR: Z out of bounds"); return; }
-
-  // Queue moves
-  stepper_x.moveTo((long)(target_x * MICROSTEPS_PER_DEG_X));
-  stepper_y.moveTo((long)(target_y * MICROSTEPS_PER_DEG_Y));
-  stepper_z.moveTo((long)(target_z * MICROSTEPS_PER_DEG_Z));
-
-  current_x = target_x;
-  current_y = target_y;
-  current_z = target_z;
-
-  // FIX: Only set move_command_pending — NOT homing flag
-  move_command_pending = true;
+  move_command_pending = true; // loop() sends OK when motors stop
 }
 
 // ═══════════════════════════════════════════════════════════════
-// HOMING — BLOCKING (runs synchronously, sends OK when done)
+// HOMING — FULLY BLOCKING, SENDS OWN OK
 // ═══════════════════════════════════════════════════════════════
 
-// FIX: Homing is now fully synchronous/blocking and sends its own OK.
-// Previously homing set command_received=true then relied on the main
-// loop's motion-complete check — but homing_axis_x/y/z were never
-// cleared by home_single_axis(), so handle_homing() never saw
-// all_done=true and the OK was never sent.
-void handle_home_command() {
-  Serial.println("Homing sequence started...");
+// FIX BUG 1 + BUG 5:
+// Homing is now purely sequential and blocking.
+// No state machine, no flags to clear, no loop() involvement.
+// Each axis completes fully before next starts.
+// OK is sent here, not by loop().
 
-  home_single_axis(&stepper_x, X_MIN_PIN, MICROSTEPS_PER_DEG_X, "X");
-  home_single_axis(&stepper_y, Y_MIN_PIN, MICROSTEPS_PER_DEG_Y, "Y");
-  home_single_axis(&stepper_z, Z_MIN_PIN, MICROSTEPS_PER_DEG_Z, "Z");
-
-  current_x = 0.0;
-  current_y = 0.0;
-  current_z = 0.0;
-
-  Serial.println("Homing complete - All axes at zero");
-  Serial.println("OK");
+void handle_home() {
+  Serial.println("Homing all axes...");
+  home_axis(&sx, X_MIN_PIN, UDEG_X,  "X");
+  home_axis(&sy, Y_MIN_PIN, UDEG_YZ, "Y");
+  home_axis(&sz, Z_MIN_PIN, UDEG_YZ, "Z");
+  cx = 0; cy = 0; cz = 0;
+  Serial.println("✓ All axes homed");
+  Serial.println("OK");  // FIX BUG 1: home sends its own OK
   Serial.flush();
 }
 
-void home_single_axis(AccelStepper *stepper, int limit_pin, float microsteps_per_deg, const char *axis) {
-  stepper->setMaxSpeed(HOMING_FAST_SPEED);
-  stepper->setAcceleration(HOMING_ACCEL);
+void home_axis(AccelStepper* s, int pin, float udeg, const char* name) {
+  Serial.print("Homing "); Serial.println(name);
+  s->setMaxSpeed(HOMING_FAST); s->setAcceleration(HOMING_ACCEL);
+  s->moveTo(-1000000L);
 
-  // Phase 1: Fast approach
-  stepper->moveTo(-1000000L);
-  unsigned long debounce_time = 0;
-  bool switch_pressed = false;
-
+  // Phase 1: Fast hit
+  unsigned long t = 0; bool pressed = false;
   while (true) {
-    stepper->run();
-    if (digitalRead(limit_pin) == LOW) {
-      if (!switch_pressed) { debounce_time = millis(); switch_pressed = true; }
-      if (millis() - debounce_time > HOMING_DEBOUNCE_MS) {
-        stepper->stop();
-        while (stepper->isRunning()) stepper->run();
-        break;
-      }
-    } else {
-      switch_pressed = false;
-    }
+    s->run();
+    if (digitalRead(pin) == LOW) {
+      if (!pressed) { t = millis(); pressed = true; }
+      if (millis() - t > DEBOUNCE_MS) { s->stop(); while (s->isRunning()) s->run(); break; }
+    } else pressed = false;
   }
-
+  Serial.print("✓ "); Serial.print(name); Serial.println(" hit");
   delay(100);
 
   // Phase 2: Back off
-  long backoff = (long)(HOMING_BACKOFF_DEGREES * microsteps_per_deg);
-  stepper->moveTo(stepper->currentPosition() + backoff);
-  while (stepper->isRunning()) stepper->run();
-
+  s->moveTo(s->currentPosition() + (long)(BACKOFF_DEG * udeg));
+  while (s->isRunning()) s->run();
   delay(100);
 
-  // Phase 3: Slow approach for fine zero
-  stepper->setMaxSpeed(HOMING_SLOW_SPEED);
-  stepper->moveTo(-1000000L);
-  debounce_time = 0;
-  switch_pressed = false;
-
+  // Phase 3: Slow approach
+  s->setMaxSpeed(HOMING_SLOW); s->moveTo(-1000000L);
+  t = 0; pressed = false;
   while (true) {
-    stepper->run();
-    if (digitalRead(limit_pin) == LOW) {
-      if (!switch_pressed) { debounce_time = millis(); switch_pressed = true; }
-      if (millis() - debounce_time > HOMING_DEBOUNCE_MS) {
-        stepper->stop();
-        while (stepper->isRunning()) stepper->run();
-        break;
-      }
-    } else {
-      switch_pressed = false;
-    }
+    s->run();
+    if (digitalRead(pin) == LOW) {
+      if (!pressed) { t = millis(); pressed = true; }
+      if (millis() - t > DEBOUNCE_MS) { s->stop(); while (s->isRunning()) s->run(); break; }
+    } else pressed = false;
   }
 
-  // Zero this axis
-  stepper->setCurrentPosition(0);
-  stepper->setMaxSpeed(MAX_SPEED);
-  stepper->setAcceleration(NORMAL_ACCEL);
+  s->setCurrentPosition(0);
+  s->setMaxSpeed(MAX_SPEED); s->setAcceleration(NORMAL_ACCEL);
+  Serial.print("✓ "); Serial.print(name); Serial.println(" zeroed");
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ATC — 4x MG90S SERVO LATCH
+// ═══════════════════════════════════════════════════════════════
+void atc_do_lock() {
+  for (int p = ATC_OPEN; p <= ATC_CLOSE; p++) {
+    srv1.write(p);   // Top Left
+    srv2.write(p);   // Bottom Right (diagonal)
+    delay(ATC_DELAY);
+  }
+  atc_locked = true;
+}
+
+void atc_do_unlock() {
+  int start = atc_locked ? ATC_CLOSE : ATC_OPEN;
+  for (int p = start; p >= ATC_OPEN; p--) {
+    srv1.write(p);   // Top Left
+    srv2.write(p);   // Bottom Right (diagonal)
+    delay(ATC_DELAY);
+  }
+  atc_locked = false;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TOOL ID — RESISTOR LADDER
+// ═══════════════════════════════════════════════════════════════
+int read_tool_id() {
+  delay(200);
+  long sum = 0;
+  for (int i = 0; i < 20; i++) { sum += analogRead(TOOL_ID_PIN); delay(10); }
+  int adc = sum / 20;
+  Serial.print("ADC: "); Serial.println(adc);
+  if (adc >= 70  && adc <= 120) return 1;  // Gripper  (1kΩ)
+  if (adc >= 150 && adc <= 220) return 2;  // Suction  (2.2kΩ)
+  if (adc >= 290 && adc <= 370) return 3;  // Solder   (4.7kΩ)
+  return 0;
 }

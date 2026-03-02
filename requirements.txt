@@ -1,9 +1,8 @@
 # APEX_PREDATOR System Requirements
 # Python 3.8 or higher required
 
-# Core dependencies
-opencv-python>=4.8.0
-opencv-contrib-python>=4.8.0
+# Core
+opencv-python>=4.8.0       # FIX: removed opencv-contrib-python (conflict)
 numpy>=1.24.0
 pyserial>=3.5
 
@@ -14,13 +13,8 @@ mediapipe>=0.10.0
 PyQt5>=5.15.9
 
 # Optional: Advanced object detection
-# ultralytics>=8.0.0  # For YOLO
-# tensorflow>=2.13.0  # For TensorFlow models
-# torch>=2.0.0        # For PyTorch models
+# ultralytics>=8.0.0   # YOLO
+# tensorflow>=2.13.0
+# torch>=2.0.0
 
-# Utility
-scipy>=1.10.0
-scikit-image>=0.20.0
-
-# Logging and data
-python-dateutil>=2.8.2
+# FIX: removed scipy, scikit-image, python-dateutil — not used anywhere in codebase

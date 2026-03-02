@@ -1,105 +1,100 @@
 {
   "system": {
     "name": "APEX_PREDATOR",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "description": "Master/Slave Handshake Protocol - Industrial Robotics Control"
   },
-  
+
   "hardware": {
     "arduino": {
       "board": "Arduino Mega 2560",
-      "serial_port": "COM3",
+      "serial_port": "COM12",
       "baud_rate": 115200,
-      "handshake_timeout": 5.0
+      "handshake_timeout": 5.0,
+      "home_timeout": 60.0
     },
+    "shield": "RAMPS 1.6",
     "motors": {
       "type": "NEMA 17 RMCS-1010",
       "torque_rating_kg_cm": 5.6,
       "steps_per_rev": 200,
       "microsteps": 8,
-      "max_rpm": 100,
-      "notes": "DRV8825 drivers set to 1/8 microstepping. Vref tuned to 0.73V (1.46A max current)"
+      "notes": "DRV8825 @ 1/8 microstep. Vref=0.73V (1.46A max). 3 motors on X/Y/Z."
     },
     "drivers": {
       "model": "DRV8825",
       "microstep_mode": 8,
       "vref_voltage": 0.73,
-      "max_current": 1.46,
-      "notes": "One driver per motor (Base, Shoulder, Elbow)"
+      "max_current": 1.46
     },
     "gear_ratios": {
-      "base": 1.0,
-      "shoulder": 20.0,
-      "elbow": 20.0,
-      "notes": "Gear reduction increases torque and precision. Shoulder/Elbow for heavy lifting."
+      "base_x": 1.0,
+      "shoulder_y": 20.0,
+      "elbow_z": 20.0
     },
     "limit_switches": {
-      "enabled": true,
-      "type": "KW12 Mechanical",
-      "logic": "Normally Open (NO), Two-Wire",
-      "pins": {
-        "x_min": 3,
-        "y_min": 14,
-        "z_min": 18
-      },
+      "type": "MS-114 SPDT (NO wiring)",
+      "logic": "Normally Open, INPUT_PULLUP — resting=HIGH, pressed=LOW",
+      "wiring": "COM to GND, NO to signal pin",
+      "pins": { "x_min": 3, "y_min": 14, "z_min": 18 },
       "debounce_ms": 20,
-      "homing_approach_speed": 10,
-      "homing_backoff_degrees": 5,
-      "notes": "Double-tap homing protocol: initial fast hit, then back off and slow approach"
+      "homing_backoff_degrees": 5
+    },
+    "atc_servos": {
+      "note": "2x MG90S diagonal opposite — top-left (pin 4) + bottom-right (pin 11)",
+      "srv1_top_left_pin": 4,
+      "srv2_bot_right_pin": 11,
+      "unlocked_deg": 0,
+      "locked_deg": 65,
+      "sweep_delay_ms": 4,
+      "freed_pins": [5, 6]
+    },
+    "esp32_cam": {
+      "stream_url": "http://192.168.1.47/stream",
+      "note": "Update IP after ESP32-CAM connects to your WiFi network",
+      "width": 640,
+      "height": 480,
+      "fps": 20,
+      "buffer_size": 1
+    },
+    "power": {
+      "motor_supply": "12V 10A SMPS",
+      "servo_supply": "LM2596 buck from 12V to 5V (3A capacity)",
+      "esp32_cam_supply": "18650 + TP4056 Type-C + MT3608 boost to 5V"
     }
   },
 
   "kinematic_limits": {
-    "notes": "Kinematic Shield - prevents hardware damage and collision",
-    "joint_x_base": {
-      "name": "Base Rotation",
-      "min_angle": -180,
-      "max_angle": 180,
-      "unit": "degrees",
-      "speed_limit": 90,
-      "acceleration_limit": 45
-    },
-    "joint_y_shoulder": {
-      "name": "Shoulder Lift",
-      "min_angle": -30,
-      "max_angle": 90,
-      "unit": "degrees",
-      "speed_limit": 60,
-      "acceleration_limit": 30,
-      "notes": "Constrained to prevent tipping. -30° to 90° safe range."
-    },
-    "joint_z_elbow": {
-      "name": "Elbow Extension",
-      "min_angle": -90,
-      "max_angle": 90,
-      "unit": "degrees",
-      "speed_limit": 45,
-      "acceleration_limit": 22,
-      "notes": "Full range for articulation, constrained by shoulder limits."
-    }
+    "joint_x_base":     { "min_angle": -180, "max_angle": 180 },
+    "joint_y_shoulder": { "min_angle": -30,  "max_angle": 90  },
+    "joint_z_elbow":    { "min_angle": -90,  "max_angle": 90  }
   },
 
   "communication": {
     "protocol": "Master/Slave Handshake",
-    "command_format": "<MOVE X{angle} Y{angle} Z{angle}>",
-    "home_command": "HOME",
-    "command_terminator": "\n",
-    "response_ok": "OK",
-    "response_error": "ERR",
-    "heartbeat_disabled": "Zero-fail handshake eliminates need for heartbeat",
-    "examples": {
-      "move_command": "<MOVE X45.0 Y90.0 Z-30.0>",
-      "home_all_joints": "HOME",
-      "python_blocks_for_response": "Python waits in blocking loop for 'OK'"
-    }
+    "move_format": "<MOVE X{angle} Y{angle} Z{angle}>",
+    "commands": {
+      "home":    "HOME",
+      "lock":    "LOCK",
+      "unlock":  "UNLOCK",
+      "enable":  "EN",
+      "disable": "DIS",
+      "tool_id": "TOOL_ID"
+    },
+    "response_ok":  "OK",
+    "response_err": "ERR",
+    "handshake_timeout": 5.0,
+    "home_timeout": 60.0
   },
 
   "camera": {
-    "index": 0,
-    "width": 1280,
-    "height": 720,
-    "fps": 30,
-    "auto_exposure": true
+    "source": "esp32_cam",
+    "esp32_stream_url": "http://192.168.1.47/stream",
+    "fallback_usb_index": 0,
+    "width": 640,
+    "height": 480,
+    "fps": 20,
+    "buffer_size": 1
   },
 
   "safety": {
@@ -107,54 +102,37 @@
     "safe_zone_radius": 150,
     "max_velocity": 100,
     "emergency_stop_enabled": true,
-    "proximity_alert_enabled": true,
-    "temperature_limit": 400,
-    "handshake_timeout": 5.0
+    "handshake_timeout": 5.0,
+    "homing_timeout": 60.0
   },
 
   "end_effectors": {
-    "soldering_iron": {
-      "preheat_time": 30,
-      "target_temperature": 350,
-      "follow_distance": 50,
-      "pwm_pin": 9,
-      "enable_pin": 8
-    },
+    "note": "Tool ID via resistor ladder on ATC cube terminal (A0 pin, 10k pullup)",
     "gripper": {
-      "servo_pin": 11,
-      "open_angle": 90,
-      "close_angle": 0,
-      "force_limit": 5
-    }
-  },
-
-  "vision": {
-    "hand_tracking": {
-      "enabled": true,
-      "max_hands": 2,
-      "detection_confidence": 0.7,
-      "tracking_confidence": 0.5
+      "tool_id_resistor_ohms": 1000,
+      "tool_id_adc_min": 70, "tool_id_adc_max": 120
     },
-    "object_detection": {
-      "enabled": true,
-      "model": "custom",
-      "confidence_threshold": 0.7,
-      "detection_cooldown": 1.0
-    }
+    "suction": {
+      "tool_id_resistor_ohms": 2200,
+      "tool_id_adc_min": 150, "tool_id_adc_max": 220
+    },
+    "solder": {
+      "tool_id_resistor_ohms": 4700,
+      "tool_id_adc_min": 290, "tool_id_adc_max": 370
+    },
+    "none": { "tool_id_adc_min": 900, "tool_id_adc_max": 1023 }
   },
 
   "logging": {
     "level": "INFO",
     "console_output": true,
     "file_output": true,
-    "log_file": "apex_predator.log",
-    "max_file_size": 10485760,
-    "backup_count": 5
+    "log_file": "apex_predator.log"
   },
 
   "gui": {
     "theme": "dark",
-    "video_fps": 30,
+    "video_fps": 20,
     "status_update_rate": 10,
     "window_width": 1600,
     "window_height": 900
